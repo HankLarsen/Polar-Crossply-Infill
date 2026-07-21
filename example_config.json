@@ -1,0 +1,40 @@
+{
+  "od": 66.2,
+  "id": 10.5,
+  "height": 9.4,
+
+  "layer_height": 0.4,
+  "first_layer_height": 0.2,
+  "line_width": 1.0,
+  "nozzle_diameter": 0.6,
+  "filament_diameter": 1.75,
+  "flow": 1.0,
+
+  "outer_walls": 2,
+  "inner_walls": 2,
+  "solid_cap_layers": 4,
+
+  "infill_density": 100.0,
+
+  "ply_sequence": "R,H",
+  "phase_stagger_deg": 3.0,
+  "banding": "doubling",
+  "band_ratio": 2.0,
+  "spoke_continuity": "zigzag",
+  "anchor": 2.5,
+  "tie_rings": true,
+
+  "print_speed": 40.0,
+  "wall_speed": 30.0,
+  "first_layer_speed": 20.0,
+  "travel_speed": 150.0,
+
+  "retract_length": 1.0,
+  "z_hop": 0.4,
+
+  "nozzle_temp": 210.0,
+  "bed_temp": 60.0,
+
+  "bed_x": 220.0,
+  "bed_y": 220.0
+}
