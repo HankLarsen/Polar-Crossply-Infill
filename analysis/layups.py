@@ -17,8 +17,8 @@ Coverage is capped at 1.0 and so discards over-deposition; it also ignores the
 
     layup   coverage   DEPOSITED (mass)
     RAD       0.834        1.242
-    HOOP      0.964        0.964
-    XPLY      0.899        1.103
+    HOOP      0.997        1.131
+    XPLY      0.916        1.186
     G45       ~1.0         1.000
 
 Using coverage as mass understated RAD by 1.56x and XPLY by 1.25x, which
@@ -51,7 +51,7 @@ a, b, h = 5.250e-3, 33.100e-3, 9.400e-3
 W = 1.0e-3                      # road width
 ANCHOR = 2.5e-3
 BANDS = [(5.25e-3, 10.50e-3, 33), (10.50e-3, 21.01e-3, 66), (21.01e-3, 33.10e-3, 132)]
-PHI_HOOP = 0.9695
+PHI_HOOP = 0.9970
 
 
 def phi_rad(r):
@@ -125,7 +125,7 @@ LAYUPS = {
 # normalised to a perfectly-packed solid layer = 1.000. See mass_audit.py.
 # Superseded values (coverage-based, WRONG as mass):
 #   {'ISO':1.000,'XPLY':0.883,'HOOP':0.970,'RAD':0.796,'G45':1.000}
-MASSFRAC = {'ISO': 1.000, 'XPLY': 1.103, 'HOOP': 0.964, 'RAD': 1.242, 'G45': 1.000}
+MASSFRAC = {'ISO': 1.000, 'XPLY': 1.126, 'HOOP': 1.009, 'RAD': 1.242, 'G45': 1.000}
 
 
 def laminate(mat, layup, r):

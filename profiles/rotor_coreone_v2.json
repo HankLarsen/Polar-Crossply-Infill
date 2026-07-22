@@ -1,0 +1,21 @@
+{
+  "_comment": "v2.0 CURRENT. Reference rotor, Prusa Core One, 0.6 mm nozzle, PLA. Matches examples/rotor_COREONE_E_varwidth_full.gcode (test printed, good).",
+  "od": 66.2,
+  "id": 10.5,
+  "height": 9.4,
+  "line_width": 1.0,
+  "nozzle_diameter": 0.6,
+  "layer_height": 0.4,
+  "first_layer_height": 0.2,
+  "bed_x": 250,
+  "bed_y": 220,
+  "z_hop": 0.4,
+  "hoop_spiral": false,
+  "radial_mode": "vw",
+  "vw_w_min": 0.6,
+  "vw_w_max": 1.2,
+  "vw_end_gap": 0.0,
+  "vw_band_gap": 0.3,
+  "vw_vol_rate": 8.0,
+  "print_speed": 45.0
+}

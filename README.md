@@ -5,8 +5,11 @@ polar coordinate system about a detected axis, alternating orientation between
 layers:
 
 - **Hoop plies** — concentric rings about the axis (roads run circumferentially).
-- **Radial plies** — spokes from the bore outward, laid in radius *bands* so
-  circumferential spacing stays roughly constant instead of diverging as `1/r`.
+- **Radial plies** — spokes from the bore outward with **variable road width**:
+  width grows in proportion to radius (nozzle diameter up to nozzle max), which
+  holds coverage *exactly* constant rather than letting it diverge as `1/r`.
+  Width is produced by holding volumetric rate constant and slowing the head.
+  No tie rings, no anchors, no circumferential step-overs — so roads never cross.
 
 Alternating the two is cross-ply plywood in cylindrical coordinates: continuous,
 load-path-aligned roads through the full thickness in **both** principal in-plane
@@ -78,6 +81,12 @@ See `SPEC.md` §7. In the Slic3r family (PrusaSlicer / OrcaSlicer / Bambu / Supe
 it's a new `InfillPattern` enum value + a `Fill`-derived class implementing
 `_fill_surface_single`, clipping the generated polylines to the region ExPolygon. The
 band/spoke math ports verbatim from `polar_crossply.py`.
+
+## Version
+
+Current: **v2.0** (variable-width radial plies). See [`CHANGELOG.md`](CHANGELOG.md).
+Reference profile `profiles/rotor_coreone_v2.json`, reference output
+`examples/rotor_COREONE_E_varwidth_full.gcode` (test printed).
 
 ## Analysis
 

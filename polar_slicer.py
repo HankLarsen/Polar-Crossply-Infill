@@ -22,7 +22,7 @@ import argparse, json, math, sys
 from dataclasses import dataclass, asdict, field
 from typing import List, Tuple, Optional
 
-from polar_crossply import (PolarParams, hoop_ply, radial_ply, grid_ply,
+from polar_crossply import (PolarParams, hoop_ply, radial_ply, grid_ply, radial_ply_vw,
                             ply_type_for_layer, _band_edges)
 
 Point = Tuple[float, float]
@@ -60,7 +60,14 @@ class Config:
     phase_stagger_deg: float = 3.0
     auto_phase_stagger: bool = True   # set stagger so spokes sweep one inter-spoke
                                       # pitch over the radial layers (helical winding)
-    hoop_spiral: bool = True          # seamless spiral hoop plies (no stacked seam)
+    hoop_spiral: bool = False          # seamless spiral hoop plies (no stacked seam)
+    # --- variable-width radial ply (v2) -------------------------------------
+    radial_mode: str = "vw"           # {vw, banded}. vw = variable-width (v2, current)
+    vw_w_min: float = 0.6             # = nozzle diameter
+    vw_w_max: float = 1.2             # nozzle max road width
+    vw_end_gap: float = 0.0           # spokes stop this far short of the perimeter
+    vw_band_gap: float = 0.3          # radial gap between bands
+    vw_vol_rate: float = 8.0          # mm^3/s held constant; width set by speed
     banding: str = "doubling"         # {none, doubling, geometric}
     band_ratio: float = 2.0
     spoke_continuity: str = "zigzag"
@@ -93,6 +100,10 @@ class Config:
     # These generic Marlin defaults home, heat, and prime. Replace for your printer.
     start_gcode: str = ""
     end_gcode: str = ""
+    # Emitted once, immediately after the first layer completes. Typical use:
+    # switch the part-cooling fan on and raise the bed temp (most profiles run
+    # the first layer with the fan off and a cooler bed for adhesion).
+    after_first_layer_gcode: str = ""
 
 
 DEFAULT_START = """; ---- START (generic Marlin; replace with your printer's) ----
@@ -211,6 +222,10 @@ def layer_infill(cfg: Config, center: Point, layer_index: int, n_layers: int) ->
         g_ord = sum(1 for i in range(layer_index) if ply_type_for_layer(p, i) == "G")
         return grid_ply(p, ply_index=g_ord)
     radial_ord = sum(1 for i in range(layer_index) if ply_type_for_layer(p, i) == "R")
+    if getattr(cfg, "radial_mode", "banded") == "vw":
+        return radial_ply_vw(p, ply_index=radial_ord,
+                             w_min=cfg.vw_w_min, w_max=cfg.vw_w_max,
+                             end_gap=cfg.vw_end_gap, band_gap=cfg.vw_band_gap)
     return radial_ply(p, ply_index=radial_ord)
 
 
@@ -230,7 +245,14 @@ class GcodeWriter:
     def g(self, s): self.lines.append(s)
 
     def e_for(self, seg_len, lh):
-        vol = seg_len * self.cfg.line_width * lh
+        # Rounded-rectangle bead cross-section, as Slic3r/PrusaSlicer use:
+        # an extruded road is not a sharp rectangle -- its edges are rounded to
+        # radius lh/2, so area = w*lh - lh^2*(1 - pi/4).  Using plain w*lh
+        # over-extrudes by ~4% at 0.2 mm layers and ~9% at 0.4 mm.
+        # Verified against a known-good PrusaSlicer export: matches to 4 d.p.
+        w = self.cfg.line_width
+        area = w * lh - lh * lh * (1.0 - math.pi / 4.0)
+        vol = seg_len * max(area, 1e-9)
         e = vol / self.fil_area * self.cfg.flow
         self.filament_used += e
         return e
@@ -271,6 +293,29 @@ class GcodeWriter:
             self.g("G1 X%.3f Y%.3f E%.5f F%d" % (pt[0], pt[1], self.e_for(seg, lh), f))
             self.x, self.y = pt
 
+    def e_for_w(self, seg_len, lh, width):
+        area = width * lh - lh * lh * (1.0 - math.pi / 4.0)
+        e = seg_len * max(area, 1e-9) / self.fil_area * self.cfg.flow
+        self.filament_used += e
+        return e
+
+    def extrude_path_vw(self, path, z, lh, vol_rate, speed_cap):
+        """path = [(x, y, width), ...]. Volumetric rate held constant, so the
+        head slows as the road widens: v = Q / (w * lh)."""
+        if len(path) < 2: return
+        self.travel_to((path[0][0], path[0][1]), z)
+        prev_w = path[0][2]                      # reset per path -- do not carry over
+        corr = lh * lh * (1.0 - math.pi / 4.0)   # rounded-bead correction
+        for pt in path[1:]:
+            seg = math.hypot(pt[0]-self.x, pt[1]-self.y)
+            if seg < 1e-6: continue
+            wmid = 0.5*(pt[2] + prev_w)
+            area = max(1e-9, wmid*lh - corr)     # true bead area, not w*lh
+            v = min(speed_cap, vol_rate / area)  # constant volumetric rate
+            self.g("G1 X%.3f Y%.3f E%.5f F%d"
+                   % (pt[0], pt[1], self.e_for_w(seg, lh, wmid), int(v*60)))
+            self.x, self.y = pt[0], pt[1]; prev_w = pt[2]
+
     def move_z(self, z):
         self.g("G1 Z%.3f F600" % z); self.z = z
 
@@ -298,6 +343,8 @@ def generate(cfg: Config) -> Tuple[str, dict]:
         cap = (li < cfg.solid_cap_layers) or (li >= n_layers - cfg.solid_cap_layers)
         p = polar_params_for(cfg, center)
         ptype = "CAP" if cap else ply_type_for_layer(p, li)
+        if li == 1 and cfg.after_first_layer_gcode:
+            w.g(cfg.after_first_layer_gcode.rstrip())
         w.g(";LAYER:%d" % li)
         w.g(";Z:%.3f" % z)
         w.g(";PLY:%s" % ptype)
@@ -312,14 +359,22 @@ def generate(cfg: Config) -> Tuple[str, dict]:
             w.extrude_path(loop, z, lh, spd_wall)
         w.g(";TYPE:%s" % ("SOLID" if (cap or ptype=="H") else "RADIAL"))
         for path in layer_infill(cfg, center, li, n_layers):
-            w.extrude_path(path, z, lh, spd_fill)
+            if path and len(path[0]) == 3:          # (x, y, width) -> variable width
+                w.extrude_path_vw(path, z, lh, cfg.vw_vol_rate, spd_fill)
+            else:
+                w.extrude_path(path, z, lh, spd_fill)
 
     # ---- end gcode ----
     w.retract()
     end = (cfg.end_gcode or DEFAULT_END).format(**subs)
     w.g(end.rstrip())
 
-    stats["bands"] = _band_edges(polar_params_for(cfg, center))
+    if getattr(cfg, "radial_mode", "banded") == "vw":
+        from polar_crossply import vw_bands
+        stats["bands"] = vw_bands(polar_params_for(cfg, center),
+                                  cfg.vw_w_min, cfg.vw_w_max, cfg.vw_end_gap, cfg.vw_band_gap)
+    else:
+        stats["bands"] = _band_edges(polar_params_for(cfg, center))
     stats["filament_mm"] = round(w.filament_used, 1)
     stats["filament_g_PLA"] = round(w.filament_used * w.fil_area * 1.24 / 1000, 2)
     return "\n".join(w.lines) + "\n", stats
@@ -346,6 +401,7 @@ def main(argv=None):
     ap.add_argument("--spoke_continuity", choices=["zigzag","individual"])
     ap.add_argument("--start_gcode_file")
     ap.add_argument("--end_gcode_file")
+    ap.add_argument("--after_first_layer_gcode_file")
     args = ap.parse_args(argv)
 
     cfg = Config()
@@ -355,10 +411,11 @@ def main(argv=None):
         for k,v in data.items():
             if hasattr(cfg,k): setattr(cfg,k,v)
     for k,v in vars(args).items():
-        if k in ("out","config","start_gcode_file","end_gcode_file"): continue
+        if k in ("out","config","start_gcode_file","end_gcode_file","after_first_layer_gcode_file"): continue
         if v is not None and hasattr(cfg,k): setattr(cfg,k,v)
     if args.start_gcode_file: cfg.start_gcode = open(args.start_gcode_file).read()
     if args.end_gcode_file: cfg.end_gcode = open(args.end_gcode_file).read()
+    if args.after_first_layer_gcode_file: cfg.after_first_layer_gcode = open(args.after_first_layer_gcode_file).read()
 
     gcode, stats = generate(cfg)
     with open(args.out,"w") as f: f.write(gcode)

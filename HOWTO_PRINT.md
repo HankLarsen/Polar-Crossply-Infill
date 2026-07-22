@@ -78,6 +78,36 @@ python polar_slicer.py --config example_config.json -o my_rotor.gcode
 | Nicer top surface | more `--solid_cap_layers` |
 | Nozzle hitting spokes | raise `--z_hop` |
 
+
+### Ready-made Prusa Core One profile (0.6 mm nozzle, PLA)
+
+If you have a Core One, the machine-specific blocks are already in `profiles/`,
+extracted from a known-good print (PrusaSlicer 2.9.4, firmware 6.4.0+11974). They
+include the full MBL sequence, purge line, pressure advance, and nozzle/model checks.
+
+```bash
+python polar_slicer.py --od 66.2 --id 10.5 --height 9.4 \
+    --line_width 1.0 --nozzle_diameter 0.6 \
+    --layer_height 0.4 --first_layer_height 0.2 \
+    --bed_x 250 --bed_y 220 \
+    --start_gcode_file profiles/coreone_0.6_PLA_start.gcode \
+    --end_gcode_file profiles/coreone_0.6_PLA_end.gcode \
+    --after_first_layer_gcode_file profiles/coreone_0.6_PLA_afterfirst.gcode \
+    -o my_rotor.gcode
+```
+
+Temperatures are baked into that start block (220 nozzle / 55 bed first layer,
+60 after) — edit the file to change them, not the CLI flags.
+
+`--after_first_layer_gcode_file` emits its contents once, right after layer 0.
+Most profiles run the first layer with the fan off and a cooler bed for adhesion,
+then switch both after; that is what the Core One `afterfirst` block does.
+
+**If you change the part size or move it off centre, update `M555` and the part
+bounds in the start block** — it declares the first-layer print area to the firmware.
+
+A pre-generated file is at `examples/polar_rotor_COREONE_0.6n_PLA.gcode`.
+
 ### What Route A cannot do
 Only axisymmetric parts defined by OD / bore / height. No arbitrary outlines,
 pockets, gear teeth, off-center holes, or non-flat top/bottom. For those → Route B.
