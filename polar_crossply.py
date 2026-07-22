@@ -45,7 +45,21 @@ class PolarParams:
 
     # --- ply scheme ---------------------------------------------------------
     ply_sequence: str = "R,H"           # repeating; R=radial, H=hoop. e.g. "H,H,R" biases hoop
-    phase_stagger_deg: float = 0.0      # rotate spokes each successive radial ply
+    # HELICAL STAGGER: rotate the spoke set by this angle on each successive
+    # radial ply so the inter-spoke gaps never stack into a vertical weak
+    # channel -- they helix instead (the "filament-winding" advance). Set it so
+    # the spokes sweep one inter-spoke pitch over the radial layers in the part.
+    phase_stagger_deg: float = 3.0
+
+    # --- hoop ply form ------------------------------------------------------
+    # True  -> one continuous SEAMLESS SPIRAL from bore to rim (no per-ring
+    #          start/stop seam; the ring-seams can't stack into a hoop crack).
+    # False -> discrete concentric rings (each a closed loop with a seam).
+    # In a real slicer the hoop ply is just stock CONCENTRIC infill (offset
+    # inward from the perimeter) with spiralize/connect enabled -- which makes
+    # it squares-on-squares, ovals-on-ovals, etc. automatically. The reference
+    # below demonstrates the seamless spiral on the circular/annular case.
+    hoop_spiral: bool = True
 
     # --- radial banding (density control for spokes) -----------------------
     banding: str = "doubling"           # {none, doubling, geometric}
@@ -59,9 +73,36 @@ class PolarParams:
 
 
 # ----------------------------------------------------------------------------
-# HOOP PLY  = concentric rings about the polar center
+# HOOP PLY  = concentric rings (or one seamless spiral) about the polar center
 # ----------------------------------------------------------------------------
+def _hoop_spiral(p: PolarParams, seg_deg: float = 4.0) -> Polyline:
+    """One continuous spiral from bore to rim: no per-ring seam. On a circle
+    this is a true Archimedean spiral; the analogous move on a square/oval
+    region is a spiralized perimeter-offset (handled by the slicer's concentric
+    fill with 'connect'/'spiralize' on)."""
+    pitch = p.line_spacing
+    r0 = p.bore_radius + p.extrusion_width / 2.0
+    r_max = p.outer_radius - p.extrusion_width / 2.0
+    if r_max <= r0:
+        return []
+    n_turns = (r_max - r0) / pitch
+    steps = max(1, int(n_turns * (360.0 / seg_deg)))
+    path: Polyline = []
+    for i in range(steps + 1):
+        f = i / steps
+        r = r0 + f * (r_max - r0)
+        theta = 2 * math.pi * n_turns * f
+        path.append((p.center[0] + r * math.cos(theta),
+                     p.center[1] + r * math.sin(theta)))
+    return path
+
+
 def hoop_ply(p: PolarParams, seg_deg: float = 4.0) -> List[Polyline]:
+    # Seamless spiral form (default): single continuous road, no stacked seam.
+    if getattr(p, "hoop_spiral", True):
+        sp = _hoop_spiral(p, seg_deg)
+        return [sp] if len(sp) >= 2 else []
+    # Discrete concentric rings (each a closed loop with its own seam).
     rings = []
     pitch = p.line_spacing
     r = p.bore_radius + p.extrusion_width / 2.0
@@ -146,6 +187,36 @@ def radial_ply(p: PolarParams, ply_index: int = 0) -> List[Polyline]:
 
 
 # ----------------------------------------------------------------------------
+# GRID PLY = rectilinear raster clipped to the annulus (the STOCK baseline).
+# Alternates +45/-45 per grid ply, like a conventional slicer's default.
+# ----------------------------------------------------------------------------
+def grid_ply(p: PolarParams, ply_index: int = 0, angle_deg: Optional[float] = None) -> List[Polyline]:
+    th = math.radians(angle_deg if angle_deg is not None else (45.0 + 90.0 * (ply_index % 2)))
+    ct, st = math.cos(th), math.sin(th)
+    R, Ri = p.outer_radius, p.bore_radius
+    pitch = p.line_spacing
+    paths: List[Polyline] = []
+    d = -R + pitch / 2.0
+    while d < R:
+        if abs(d) < R:
+            t_out = math.sqrt(max(0.0, R*R - d*d))
+            spans = []
+            if Ri > 0 and abs(d) < Ri:                 # line crosses the bore
+                t_in = math.sqrt(max(0.0, Ri*Ri - d*d))
+                spans = [(-t_out, -t_in), (t_in, t_out)]
+            else:
+                spans = [(-t_out, t_out)]
+            for (t0, t1) in spans:
+                if t1 - t0 < 0.5:
+                    continue
+                a = (p.center[0] + d*(-st) + t0*ct, p.center[1] + d*ct + t0*st)
+                b = (p.center[0] + d*(-st) + t1*ct, p.center[1] + d*ct + t1*st)
+                paths.append([a, b])
+        d += pitch
+    return paths
+
+
+# ----------------------------------------------------------------------------
 # LAYER DISPATCH + PART WALK
 # ----------------------------------------------------------------------------
 def ply_type_for_layer(p: PolarParams, layer_index: int) -> str:
@@ -157,6 +228,9 @@ def layer_paths(p: PolarParams, layer_index: int) -> Tuple[str, List[Polyline]]:
     t = ply_type_for_layer(p, layer_index)
     if t == "H":
         return "H", hoop_ply(p)
+    elif t == "G":
+        g_ord = sum(1 for i in range(layer_index) if ply_type_for_layer(p, i) == "G")
+        return "G", grid_ply(p, ply_index=g_ord)
     else:
         radial_ord = sum(1 for i in range(layer_index) if ply_type_for_layer(p, i) == "R")
         return "R", radial_ply(p, ply_index=radial_ord)

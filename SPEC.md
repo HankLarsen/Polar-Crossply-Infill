@@ -21,6 +21,15 @@ Alternating the two produces an FDM analogue of **cross-ply plywood in cylindric
 coordinates**: continuous, load-path-aligned roads through the full thickness in
 *both* principal in-plane directions of an axisymmetric part.
 
+With two refinements enabled by default — **seamless spiral hoop plies** (each hoop
+ply is one continuous spiral, so no per-ring start/stop seam can stack into a hoop
+crack line) and **helically-staggered radial plies** (each radial ply is rotated so
+the inter-spoke gaps advance around the part instead of columning in Z) — the result
+is also the FDM analogue of **hoop-plus-helical filament winding**, the way composite
+pressure vessels and flywheels are actually wound. Neither refinement is novel on its
+own (spiralized/connected concentric is a known request; per-layer angle increment is
+standard), but combined and auto-centered they make the pattern measurably better.
+
 **This is a special-purpose pattern, not a general infill.** It is only meaningful
 when the region has a dominant rotational-symmetry axis (discs, rings, flywheels,
 pulleys, hubs, bearing carriers, pressure annuli, encoder wheels). On arbitrary
@@ -74,7 +83,8 @@ spacing (Section 4.2). Names follow Slic3r option-key convention.
 | `polar_core_radius` | float mm | `auto` | ≥0 | Radius below which the singularity is avoided; defaults to the detected bore radius, else `4×extrusion_width`. |
 | `polar_core_fill` | enum | `concentric` | solid, concentric, none | Fill inside `polar_core_radius`. |
 | `polar_ply_sequence` | string | `R,H` | R/H tokens | Repeating per-layer ply order. `R,H`=1:1; `H,H,R` biases hoop (spin/press-fit); `R,R,H` biases radial. |
-| `polar_phase_stagger` | float ° | `0` | 0–180 | Rotate the spoke set by this angle on each successive **radial** ply, so spokes don't stack into continuous radial weak-seams. Analogous to fill-angle increment. Recommend 2–5°. |
+| `polar_hoop_form` | enum | `spiral` | spiral, rings | `spiral`: each hoop ply is one continuous seamless spiral (no per-ring seam → no stacked hoop crack line). `rings`: discrete concentric loops. In-slicer, `spiral` = stock concentric with spiralize/connect on (so it's squares-on-squares for a square outline, ovals for an oval, automatically). |
+| `polar_phase_stagger` | float ° / `auto` | `auto` | 0–180 | Rotate the spoke set by this angle on each successive **radial** ply so the inter-spoke gaps helix instead of stacking into a vertical weak channel (the filament-winding advance). `auto` sets it so the spokes sweep one inter-spoke pitch over the radial plies in the part; manual recommend 2–5°. |
 | `polar_banding` | enum | `doubling` | none, doubling, geometric | How spoke count grows with radius. `doubling`: classic dartboard split (×2 at thresholds); `geometric`: recompute count to restore target pitch; `none`: fixed count (only for narrow annuli). |
 | `polar_band_ratio` | float | `2.0` | 1.3–3.0 | Split a band when local arc-pitch exceeds `band_ratio × spacing`. 2.0 pairs with `doubling`. |
 | `polar_spoke_continuity` | enum | `zigzag` | zigzag, individual | `zigzag`: out–step–in continuous path (fast, few seams; the field-proven form); `individual`: separate anchored spokes (cleaner, more travels). |
@@ -103,13 +113,20 @@ Per region, per layer:
 ### 4.2 Ply selection
 `ply = polar_ply_sequence[ layer_index mod len(sequence) ]`.
 
-### 4.3 Hoop ply
-Emit concentric circles about the axis from `core_radius + w/2` to `outer − w/2`
-at pitch `line_spacing`. **Clip every ring to the region ExPolygon** (rings become
-clipped arcs on non-circular / off-center regions; identical to circles on a true
-disc). Note this differs from stock "concentric," which offsets inward from the
-*perimeter*; polar-hoop draws true circles about the axis. They coincide for the
-target geometry.
+### 4.3 Hoop ply — reuse concentric, spiralized
+Emit the region's **perimeter offset inward** at pitch `line_spacing` from the
+inner wall to `outer − w/2` — i.e. **stock concentric infill**. This is the right
+choice (not "true circles about the axis"): perimeter-offset generalizes to any
+outline (nested squares for a square, ovals for an oval) and covers the corners,
+whereas true circles leave a non-circular region's corners with radial coverage
+only. On a clean centered disc the two coincide.
+
+With `polar_hoop_form = spiral` (default), **connect the offset loops into one
+continuous spiral** so there is no per-loop start/stop seam — the ring seams cannot
+stack radially into a hoop crack initiator, and load transfers along a continuous
+road (a scarf-in-plane) rather than across butt-jointed loop ends. This is exactly
+the shipped "spiralize/connect concentric" behavior; the reference implements the
+circular case as a true Archimedean spiral.
 
 ### 4.4 Radial ply (the core of the contribution)
 1. **Band the radius.** Starting `n = ceil(2π·core_radius / spacing)` spokes at the
@@ -118,7 +135,11 @@ target geometry.
    circumferential coverage ~constant instead of falling as `1/r`.
 2. **Emit spokes** for each band at angles `phase + 2πk/n`, from `band_inner −
    anchor` to `band_outer + anchor` (clipped to region), staggered by
-   `phase_stagger × (radial-ply ordinal)`.
+   `phase_stagger × (radial-ply ordinal)`. The stagger is the **helical winding
+   advance**: without it, the gaps between spokes stack straight up into vertical
+   weak channels; with it, they helix around the part so no void columns and the
+   part trends toward Z-isotropy. `auto` spreads one inter-spoke pitch across all
+   the radial plies (spokes complete one full sweep over the part height).
 3. **Continuity:** `zigzag` chains spokes out/in with short circumferential steps at
    band edges; `individual` emits separate segments (anchor each end).
 4. **Tie rings** (if enabled): one ring at bore, one at rim, one at each band edge,
@@ -189,10 +210,13 @@ These share the Slic3r engine; adding an infill is a known procedure.
                              Polylines &polylines_out) override;
    ```
    Inside: resolve axis from the ExPolygon (largest hole for `auto_hole`, else
-   centroid); pick ply from `this->layer_id` and `polar_ply_sequence`; build hoop
-   circles or banded spokes exactly as Section 4; **clip to `expolygon`** with
-   `intersection_pl(paths, expolygon)`; append to `polylines_out`. Honor
-   `params.density` → `line_spacing`, and `params.anchor_length`.
+   centroid); pick ply from `this->layer_id` and `polar_ply_sequence`; for **hoop
+   plies reuse the existing concentric fill** (perimeter-offset, spiralized — do
+   not draw true circles); for **radial plies** build banded spokes per Section 4
+   and **clip to `expolygon`** with `intersection_pl(paths, expolygon)`; append to
+   `polylines_out`. Honor `params.density` → `line_spacing`, and
+   `params.anchor_length`. Reusing concentric for the hoop half means the only new
+   geometry to write is the radial banded-spoke generator.
 3. **Register** the class in the Fill factory (`Fill::new_from_type`,
    `src/libslic3r/Fill/Fill.cpp`).
 4. **Anchoring** is provided by the base infill anchor machinery; set

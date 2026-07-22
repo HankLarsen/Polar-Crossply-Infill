@@ -12,6 +12,16 @@ Alternating the two is cross-ply plywood in cylindrical coordinates: continuous,
 load-path-aligned roads through the full thickness in **both** principal in-plane
 directions of a disc/ring/annulus.
 
+Two refinements are on by default: **seamless spiral hoop plies** (each hoop layer is
+one continuous spiral — no per-ring seam that could stack into a hoop crack line) and
+**helically-staggered radial plies** (each radial layer is rotated so the gaps between
+spokes advance around the part instead of columning up in Z). Together with the
+alternation, that makes this the FDM analogue of **hoop-plus-helical filament
+winding** — how composite pressure vessels and flywheels are actually made. The hoop
+plies are just stock **concentric** infill (perimeter-offset), so on a square outline
+they're nested squares, on an oval they're ovals — it follows whatever shape the part
+is.
+
 ![radial ply vs hoop ply](examples/gcode_preview.png)
 
 ## Honest positioning (read this first)
@@ -68,6 +78,26 @@ See `SPEC.md` §7. In the Slic3r family (PrusaSlicer / OrcaSlicer / Bambu / Supe
 it's a new `InfillPattern` enum value + a `Fill`-derived class implementing
 `_fill_surface_single`, clipping the generated polylines to the region ExPolygon. The
 band/spoke math ports verbatim from `polar_crossply.py`.
+
+## Analysis
+
+An in-progress comparative study lives in [`analysis/`](analysis/). Two results from it
+are solid and independently reproduced; the rest is **not yet publishable** (placeholder
+material properties, no coupon data, one corrected error — see the folder's correction
+log).
+
+- **Press-fit governs, spin does not.** A 0.05 mm radial interference puts ~25.6 MPa
+  hoop stress at the bore — ~46 % of the PLA road-direction allowable from assembly
+  alone. Centrifugal stress doesn't reach that allowable until ≈66 500 rpm (231 m/s rim
+  speed). Spin is this pattern's best marketing story and its least relevant one.
+- **Torsion is an allowables problem, not a stress problem.** The in-plane torque field
+  τ = T/(2πr²h) is statically determinate — identical for *every* layup. No in-plane
+  road arrangement without ±45° content can reduce the shear it must carry. The
+  weakness is structural, not a tuning issue.
+
+The study also exposed a real defect in the generator: a radial ply deposits ~124 % of
+a solid layer's material while covering only ~83 % of the area. See
+[`analysis/README.md`](analysis/README.md).
 
 ## Status
 

@@ -22,7 +22,7 @@ import argparse, json, math, sys
 from dataclasses import dataclass, asdict, field
 from typing import List, Tuple, Optional
 
-from polar_crossply import (PolarParams, hoop_ply, radial_ply,
+from polar_crossply import (PolarParams, hoop_ply, radial_ply, grid_ply,
                             ply_type_for_layer, _band_edges)
 
 Point = Tuple[float, float]
@@ -58,7 +58,10 @@ class Config:
     # --- polar cross-ply pattern (see SPEC.md) -----------------------------
     ply_sequence: str = "R,H"
     phase_stagger_deg: float = 3.0
-    banding: str = "doubling"       # {none, doubling, geometric}
+    auto_phase_stagger: bool = True   # set stagger so spokes sweep one inter-spoke
+                                      # pitch over the radial layers (helical winding)
+    hoop_spiral: bool = True          # seamless spiral hoop plies (no stacked seam)
+    banding: str = "doubling"         # {none, doubling, geometric}
     band_ratio: float = 2.0
     spoke_continuity: str = "zigzag"
     anchor: float = 2.5
@@ -146,13 +149,31 @@ def wall_loops(center: Point, cfg: Config) -> List[Polyline]:
     return loops
 
 
-def polar_params_for(cfg: Config, center: Point) -> PolarParams:
+def _auto_phase_deg(cfg: Config, spacing: float, core: float, n_layers: int) -> float:
+    """Stagger so spokes sweep one full inter-spoke pitch over the radial layers:
+    the inter-spoke gaps helix around the part instead of stacking in Z."""
+    n_inner = max(6, math.ceil(2*math.pi*max(core, spacing)/spacing))   # inner-band spokes
+    inter_spoke_deg = 360.0 / n_inner
+    n_radial = max(1, sum(1 for i in range(n_layers)
+                          if ply_type_for_layer_str(cfg.ply_sequence, i) == "R"))
+    return inter_spoke_deg / n_radial
+
+
+def ply_type_for_layer_str(seq: str, i: int) -> str:
+    toks = [s.strip().upper() for s in seq.split(",") if s.strip()]
+    return toks[i % len(toks)] if toks else "R"
+
+
+def polar_params_for(cfg: Config, center: Point, n_layers: int = 0) -> PolarParams:
     dens = max(1e-3, cfg.infill_density/100.0)
     spacing = cfg.line_width / dens          # 100% -> line_width (solid)
     # keep the fill INSIDE the walls
     wall_out = cfg.outer_walls * cfg.line_width
     wall_in  = cfg.inner_walls * cfg.line_width if cfg.id > 0 else 0.0
     core = cfg.id/2 + wall_in if cfg.id > 0 else max(cfg.line_width*4, spacing)
+    phase = cfg.phase_stagger_deg
+    if cfg.auto_phase_stagger and n_layers > 0:
+        phase = _auto_phase_deg(cfg, spacing, core, n_layers)
     return PolarParams(
         center=center,
         outer_radius=cfg.od/2 - wall_out,
@@ -160,7 +181,8 @@ def polar_params_for(cfg: Config, center: Point) -> PolarParams:
         extrusion_width=cfg.line_width,
         line_spacing=spacing,
         ply_sequence=cfg.ply_sequence,
-        phase_stagger_deg=cfg.phase_stagger_deg,
+        phase_stagger_deg=phase,
+        hoop_spiral=cfg.hoop_spiral,
         banding=cfg.banding,
         band_ratio=cfg.band_ratio,
         spoke_continuity=cfg.spoke_continuity,
@@ -181,10 +203,13 @@ def layer_infill(cfg: Config, center: Point, layer_index: int, n_layers: int) ->
     is_cap = (layer_index < cap) or (layer_index >= n_layers - cap)
     if is_cap:
         return dense_hoop(cfg, center)     # closed top/bottom surface
-    p = polar_params_for(cfg, center)
+    p = polar_params_for(cfg, center, n_layers)
     t = ply_type_for_layer(p, layer_index)
     if t == "H":
         return hoop_ply(p)
+    if t == "G":
+        g_ord = sum(1 for i in range(layer_index) if ply_type_for_layer(p, i) == "G")
+        return grid_ply(p, ply_index=g_ord)
     radial_ord = sum(1 for i in range(layer_index) if ply_type_for_layer(p, i) == "R")
     return radial_ply(p, ply_index=radial_ord)
 
