@@ -22,7 +22,7 @@ import argparse, json, math, sys
 from dataclasses import dataclass, asdict, field
 from typing import List, Tuple, Optional
 
-from polar_crossply import (PolarParams, hoop_ply, radial_ply, grid_ply, radial_ply_vw,
+from polar_crossply import (PolarParams, hoop_ply, radial_ply, grid_ply, radial_ply_vw, hoop_spiral_caulk, hoop_spiral_2caulk, hoop_rings_seamed, scarfed_wall_loops,
                             ply_type_for_layer, _band_edges)
 
 Point = Tuple[float, float]
@@ -60,13 +60,33 @@ class Config:
     phase_stagger_deg: float = 3.0
     auto_phase_stagger: bool = True   # set stagger so spokes sweep one inter-spoke
                                       # pitch over the radial layers (helical winding)
-    hoop_spiral: bool = False          # seamless spiral hoop plies (no stacked seam)
+    hoop_spiral: bool = False          # (deprecated) old seamless spiral, off
+    hoop_mode: str = "rings_seamed"   # {rings_seamed, rings, spiral_caulk, spiral_2caulk}
+                                      # experimental seamless spiral + tapered
+                                      # caulk (test printed; default off pending
+                                      # side-by-side vs rings)
+    caulk_early_retract: float = 1.0  # mm retract before the caulk tail ends
+    # --- scarfed perimeter walls (v2.2) -------------------------------------
+    wall_mode: str = "flat"           # {flat, scarfed}. scarfed FAILED - see seam_angle()
+                                      # Z-ramp with golden-angle seam corkscrew
+    wall_scarf_overlap_deg: float = 0.0   # (scarfed only; deprecated)
+    wall_seam_mode: str = "golden"    # {golden, fixed} butt-seam placement
     # --- variable-width radial ply (v2) -------------------------------------
     radial_mode: str = "vw"           # {vw, banded}. vw = variable-width (v2, current)
-    vw_w_min: float = 0.6             # = nozzle diameter
+    vw_w_min: float = 0.72            # ROAD WIDTH at a band's inner radius.
+                                      # 1.2x the pitch, so adjacent roads overlap
+                                      # ~20% instead of merely abutting. At equal
+                                      # width and pitch the rounded bead shoulders
+                                      # only touch at mid-height and leave an 8.3%
+                                      # V-groove between every pair of roads.
+    vw_pitch: float = 0.6             # ROAD SPACING (sets spoke count / turn count)
     vw_w_max: float = 1.2             # nozzle max road width
     vw_end_gap: float = 0.0           # spokes stop this far short of the perimeter
-    vw_band_gap: float = 0.3          # radial gap between bands
+    vw_band_gap: float = 0.3          # radial gap between bands (kept open on
+                                      # purpose; a caulk ring fills it)
+    vw_caulk_bands: bool = True       # fill each band boundary with a caulk ring
+    vw_caulk_lap: float = 0.4         # how far that ring laps onto spoke ends
+    vw_embed: float = 0.2             # spokes run this far INTO both walls
     vw_vol_rate: float = 8.0          # mm^3/s held constant; width set by speed
     banding: str = "doubling"         # {none, doubling, geometric}
     band_ratio: float = 2.0
@@ -136,27 +156,70 @@ M84
 # ============================================================================
 # GEOMETRY HELPERS
 # ============================================================================
-def ring(center: Point, r: float, seg_deg: float = 4.0) -> Polyline:
+def ring(center: Point, r: float, seg_deg: float = 4.0, seam_deg: float = 0.0) -> Polyline:
+    """Closed loop. `seam_deg` rotates the start/end point around the circle --
+    the geometry is identical, only the butt seam moves."""
     steps = max(16, int(360.0 / seg_deg))
-    return [(center[0] + r*math.cos(2*math.pi*k/steps),
-             center[1] + r*math.sin(2*math.pi*k/steps)) for k in range(steps+1)]
+    ph = math.radians(seam_deg)
+    return [(center[0] + r*math.cos(ph + 2*math.pi*k/steps),
+             center[1] + r*math.sin(ph + 2*math.pi*k/steps)) for k in range(steps+1)]
 
 
-def wall_loops(center: Point, cfg: Config) -> List[Polyline]:
-    """Outer + inner perimeter loops, printed every layer for surface quality."""
+GOLDEN_ANGLE_DEG = 137.50776405003785
+
+
+def road_spacing(w: float, h: float) -> float:
+    """Centre-to-centre spacing at which adjacent roads pack SOLID.
+
+    A real bead is a rounded rectangle, area = w*h - h^2(1 - pi/4). For the
+    deposited cross-section to average out to a full layer height, the spacing
+    must be area/h = w - h(1 - pi/4), NOT w. Spacing at the full width leaves
+    the rounded shoulders touching only at mid-height, with a V-groove above --
+    ~9% too far apart at w=1.0/h=0.4, and clearly visible in a preview.
+    """
+    return max(1e-3, w - h * (1.0 - math.pi / 4.0))
+
+
+def seam_angle(layer_index: int, loop_index: int, mode: str = "golden") -> float:
+    """Where to put this loop's butt seam.
+
+    'golden' advances by 137.5 deg per layer -- the maximally even distribution,
+    so seams never stack into a column and never cluster, at any layer count.
+    Each concentric loop is offset a further half-golden so the loops in one
+    layer don't seam at the same angle either.
+
+    A plain butt seam on a FLAT wall is used deliberately. The full-circumference
+    Z-ramp ('scarfed') was tried and failed: on layer 0 it ramps the nozzle from
+    0.2 to 0.4 mm while the bed is flat at zero, so the first layer is up to 2x
+    under-extruded and the whole wall stack lifts off. A wall cannot ramp on the
+    first layer because there is no ramp beneath it to sit on.
+    """
+    if mode != "golden":
+        return 0.0
+    return (layer_index * GOLDEN_ANGLE_DEG + loop_index * GOLDEN_ANGLE_DEG * 0.5) % 360.0
+
+
+def wall_loops(center: Point, cfg: Config, layer_index: int = 0) -> List[Polyline]:
+    """Outer + inner perimeter loops, flat, with golden-angle-distributed seams."""
     w = cfg.line_width
+    h = cfg.layer_height
+    sp = road_spacing(w, h)          # nest the beads, don't merely abut them
+    mode = getattr(cfg, "wall_seam_mode", "golden")
     loops = []
+    li = 0
     # outer walls, inward from OD
     r_out = cfg.od/2 - w/2
     for i in range(cfg.outer_walls):
-        r = r_out - i*w
-        if r > 0: loops.append(ring(center, r))
+        r = r_out - i*sp
+        if r > 0:
+            loops.append(ring(center, r, seam_deg=seam_angle(layer_index, li, mode))); li += 1
     # inner walls, outward from bore
     if cfg.id > 0:
         r_in = cfg.id/2 + w/2
         for i in range(cfg.inner_walls):
-            r = r_in + i*w
-            if r < cfg.od/2: loops.append(ring(center, r))
+            r = r_in + i*sp
+            if r < cfg.od/2:
+                loops.append(ring(center, r, seam_deg=seam_angle(layer_index, li, mode))); li += 1
     return loops
 
 
@@ -179,8 +242,10 @@ def polar_params_for(cfg: Config, center: Point, n_layers: int = 0) -> PolarPara
     dens = max(1e-3, cfg.infill_density/100.0)
     spacing = cfg.line_width / dens          # 100% -> line_width (solid)
     # keep the fill INSIDE the walls
-    wall_out = cfg.outer_walls * cfg.line_width
-    wall_in  = cfg.inner_walls * cfg.line_width if cfg.id > 0 else 0.0
+    _sp = road_spacing(cfg.line_width, cfg.layer_height)
+    # depth consumed by n walls = w (first bead) + (n-1)*spacing
+    wall_out = (cfg.line_width + (cfg.outer_walls-1)*_sp) if cfg.outer_walls > 0 else 0.0
+    wall_in  = (cfg.line_width + (cfg.inner_walls-1)*_sp) if (cfg.inner_walls > 0 and cfg.id > 0) else 0.0
     core = cfg.id/2 + wall_in if cfg.id > 0 else max(cfg.line_width*4, spacing)
     phase = cfg.phase_stagger_deg
     if cfg.auto_phase_stagger and n_layers > 0:
@@ -210,13 +275,33 @@ def dense_hoop(cfg: Config, center: Point) -> List[Polyline]:
 
 
 def layer_infill(cfg: Config, center: Point, layer_index: int, n_layers: int) -> List[Polyline]:
+    _lh = cfg.first_layer_height if layer_index == 0 else cfg.layer_height
     cap = cfg.solid_cap_layers
     is_cap = (layer_index < cap) or (layer_index >= n_layers - cap)
     if is_cap:
+        # Caps are the visible top/bottom surfaces. They used to bypass hoop_mode
+        # entirely and always print discrete rings -- which stacked their seams
+        # into a visible radial line on layer 0. Route them through hoop_mode so
+        # the spiral+caulk runs from the very first layer.
+        hm = getattr(cfg, "hoop_mode", "rings")
+        if hm in ("spiral_caulk", "spiral_2caulk", "rings_seamed"):
+            pc = polar_params_for(cfg, center, n_layers)
+            if hm == "rings_seamed":
+                return hoop_rings_seamed(pc, cfg.vw_w_min, cfg.vw_pitch, layer_index=layer_index, layer_h=_lh)
+            if hm == "spiral_caulk":
+                return hoop_spiral_caulk(pc, cfg.vw_w_min, cfg.vw_w_max)
+            return hoop_spiral_2caulk(pc, cfg.vw_w_min, pitch=cfg.vw_pitch)
         return dense_hoop(cfg, center)     # closed top/bottom surface
     p = polar_params_for(cfg, center, n_layers)
     t = ply_type_for_layer(p, layer_index)
     if t == "H":
+        hm = getattr(cfg, "hoop_mode", "rings")
+        if hm == "spiral_caulk":
+            return hoop_spiral_caulk(p, cfg.vw_w_min, cfg.vw_w_max)
+        if hm == "spiral_2caulk":
+            return hoop_spiral_2caulk(p, cfg.vw_w_min, pitch=cfg.vw_pitch)
+        if hm == "rings_seamed":
+            return hoop_rings_seamed(p, cfg.vw_w_min, cfg.vw_pitch, layer_index=layer_index, layer_h=_lh)
         return hoop_ply(p)
     if t == "G":
         g_ord = sum(1 for i in range(layer_index) if ply_type_for_layer(p, i) == "G")
@@ -225,7 +310,10 @@ def layer_infill(cfg: Config, center: Point, layer_index: int, n_layers: int) ->
     if getattr(cfg, "radial_mode", "banded") == "vw":
         return radial_ply_vw(p, ply_index=radial_ord,
                              w_min=cfg.vw_w_min, w_max=cfg.vw_w_max,
-                             end_gap=cfg.vw_end_gap, band_gap=cfg.vw_band_gap)
+                             end_gap=cfg.vw_end_gap, band_gap=cfg.vw_band_gap,
+                             embed=cfg.vw_embed, pitch=cfg.vw_pitch, layer_h=_lh,
+                             caulk_bands=cfg.vw_caulk_bands,
+                             caulk_lap=cfg.vw_caulk_lap)
     return radial_ply(p, ply_index=radial_ord)
 
 
@@ -299,22 +387,44 @@ class GcodeWriter:
         self.filament_used += e
         return e
 
-    def extrude_path_vw(self, path, z, lh, vol_rate, speed_cap):
+    def extrude_path_vw(self, path, z, lh, vol_rate, speed_cap, early_retract=0.0):
         """path = [(x, y, width), ...]. Volumetric rate held constant, so the
-        head slows as the road widens: v = Q / (w * lh)."""
+        head slows as the road widens: v = Q / (w * lh). If early_retract > 0,
+        retract that many mm before the final ~5 points and coast them without
+        extrusion, so stored pressure bleeds into the thin tail (the caulk trick)."""
         if len(path) < 2: return
         self.travel_to((path[0][0], path[0][1]), z)
         prev_w = path[0][2]                      # reset per path -- do not carry over
         corr = lh * lh * (1.0 - math.pi / 4.0)   # rounded-bead correction
-        for pt in path[1:]:
+        cut = len(path) - 5 if early_retract > 0 else len(path)
+        for idx, pt in enumerate(path[1:], start=1):
             seg = math.hypot(pt[0]-self.x, pt[1]-self.y)
             if seg < 1e-6: continue
+            if early_retract > 0 and idx == cut:
+                self.g("G1 E-%.4f F2400 ; EARLY RETRACT - let stored pressure run out"
+                       % early_retract)
+            if idx >= cut and early_retract > 0:
+                self.g("G1 X%.3f Y%.3f F1200 ; run-out" % (pt[0], pt[1]))
+                self.x, self.y = pt[0], pt[1]; prev_w = pt[2]; continue
             wmid = 0.5*(pt[2] + prev_w)
             area = max(1e-9, wmid*lh - corr)     # true bead area, not w*lh
             v = min(speed_cap, vol_rate / area)  # constant volumetric rate
             self.g("G1 X%.3f Y%.3f E%.5f F%d"
                    % (pt[0], pt[1], self.e_for_w(seg, lh, wmid), int(v*60)))
             self.x, self.y = pt[0], pt[1]; prev_w = pt[2]
+
+    def extrude_path_3d(self, path, lh, speed):
+        """path = [(x, y, z), ...]: Z varies ALONG the path (scarfed wall)."""
+        if len(path) < 2: return
+        x0, y0, z0 = path[0]
+        self.travel_to((x0, y0), z0)
+        self.g("G1 Z%.3f F600" % z0); self.z = z0
+        for (x1, y1, z1) in path[1:]:
+            seg = math.hypot(x1-self.x, y1-self.y)
+            if seg < 1e-6: continue
+            self.g("G1 X%.3f Y%.3f Z%.3f E%.5f F%d"
+                   % (x1, y1, z1, self.e_for(seg, lh), int(speed*60)))
+            self.x, self.y, self.z = x1, y1, z1
 
     def move_z(self, z):
         self.g("G1 Z%.3f F600" % z); self.z = z
@@ -354,12 +464,27 @@ def generate(cfg: Config) -> Tuple[str, dict]:
         spd_fill = cfg.first_layer_speed if li == 0 else (cfg.solid_speed if (cap or ptype=="H") else cfg.print_speed)
 
         # walls first, then infill (infill anchors onto walls)
-        w.g(";TYPE:WALL")
-        for loop in wall_loops(center, cfg):
-            w.extrude_path(loop, z, lh, spd_wall)
+        if getattr(cfg, "wall_mode", "flat") == "scarfed":
+            w.g(";TYPE:WALL (scarfed, golden-angle seam)")
+            for loop in scarfed_wall_loops(center, cfg, z, lh, li,
+                                           overlap_deg=cfg.wall_scarf_overlap_deg):
+                w.extrude_path_3d(loop, lh, spd_wall)
+            w.move_z(z)          # return to flat layer Z for the infill
+        else:
+            w.g(";TYPE:WALL")
+            for loop in wall_loops(center, cfg, li):
+                w.extrude_path(loop, z, lh, spd_wall)
         w.g(";TYPE:%s" % ("SOLID" if (cap or ptype=="H") else "RADIAL"))
         for path in layer_infill(cfg, center, li, n_layers):
-            if path and len(path[0]) == 3:          # (x, y, width) -> variable width
+            if path and isinstance(path, tuple) and len(path) == 2 and isinstance(path[0], str):
+                kind, pts = path
+                if kind == "caulk":
+                    w.g(";TYPE:CAULK (spiral crescent, early retract)")
+                    w.extrude_path_vw(pts, z, lh, cfg.vw_vol_rate, spd_fill,
+                                      early_retract=cfg.caulk_early_retract)
+                else:
+                    w.extrude_path_vw(pts, z, lh, cfg.vw_vol_rate, spd_fill)
+            elif path and len(path[0]) == 3:        # (x, y, width) -> variable width
                 w.extrude_path_vw(path, z, lh, cfg.vw_vol_rate, spd_fill)
             else:
                 w.extrude_path(path, z, lh, spd_fill)

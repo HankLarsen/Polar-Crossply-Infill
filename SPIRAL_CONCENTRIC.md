@@ -81,6 +81,15 @@ offset-polygon version is the contribution.
 
 ---
 
+## Handing this to a dedicated agent
+
+`SCARF_AGENT_PROMPT.md` in this repo carries the full state: the three failed
+attempts and why each failed, the topological obstruction (you cannot tile an annulus
+with a single continuous constant-width path with zero void *and* zero overlap), the
+measured baseline to beat, and the one unexplored direction that looks most promising
+— using the v2 variable-width machinery to widen the road through the first and last
+turn, which becomes printable if the spiral runs at `w_min = nozzle diameter`.
+
 ## Recommended route
 
 **Comment on #6898 offering to implement it. Do not open a competing issue.**

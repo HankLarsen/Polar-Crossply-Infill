@@ -1,0 +1,12 @@
+{
+  "_comment": "v2.1 EXPERIMENTAL spiral+caulk hoop. Reverse-engineered from a printed file. Off by default; print and compare vs rings before relying on it.",
+  "od": 66.2, "id": 10.5, "height": 9.4,
+  "line_width": 1.0, "nozzle_diameter": 0.6,
+  "layer_height": 0.4, "first_layer_height": 0.2,
+  "bed_x": 250, "bed_y": 220, "z_hop": 0.4,
+  "radial_mode": "vw",
+  "hoop_mode": "spiral_caulk",
+  "vw_w_min": 0.6, "vw_w_max": 1.2,
+  "vw_vol_rate": 8.0, "print_speed": 45.0,
+  "caulk_early_retract": 1.0
+}

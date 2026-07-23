@@ -84,7 +84,7 @@ band/spoke math ports verbatim from `polar_crossply.py`.
 
 ## Version
 
-Current: **v2.0** (variable-width radial plies). See [`CHANGELOG.md`](CHANGELOG.md).
+Current: **v3.1** — extrusion model validated against measured parts (deposition 1.005). See [`CHANGELOG.md`](CHANGELOG.md).
 Reference profile `profiles/rotor_coreone_v2.json`, reference output
 `examples/rotor_COREONE_E_varwidth_full.gcode` (test printed).
 

@@ -125,7 +125,7 @@ LAYUPS = {
 # normalised to a perfectly-packed solid layer = 1.000. See mass_audit.py.
 # Superseded values (coverage-based, WRONG as mass):
 #   {'ISO':1.000,'XPLY':0.883,'HOOP':0.970,'RAD':0.796,'G45':1.000}
-MASSFRAC = {'ISO': 1.000, 'XPLY': 1.126, 'HOOP': 1.009, 'RAD': 1.242, 'G45': 1.000}
+MASSFRAC = {'ISO': 1.000, 'XPLY': 0.995, 'HOOP': 1.009, 'RAD': 0.981, 'G45': 1.000}  # v2 (variable-width radial); v1 was RAD 1.242
 
 
 def laminate(mat, layup, r):
